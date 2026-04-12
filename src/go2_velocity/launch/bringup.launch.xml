@@ -1,0 +1,11 @@
+<launch>
+  <arg name="config_file"
+       default="$(find-pkg-share go2_velocity)/config/go2_velocity.yaml"/>
+  <arg name="real_robot" default="false"
+       description="true = compute CRC (real hardware), false = skip CRC (simulator)"/>
+
+  <node pkg="go2_velocity" exec="go2_velocity_node" name="go2_velocity_node" output="screen">
+    <param from="$(var config_file)"/>
+    <param name="real_robot" value="$(var real_robot)"/>
+  </node>
+</launch>
