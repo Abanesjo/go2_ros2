@@ -1,0 +1,21 @@
+<launch>
+    <arg name="hostname" default="192.168.123.70" description="Vicon server hostname or IP address"/>
+    <arg name="buffer_size" default="200" description="Buffer size for Vicon data"/>
+    <arg name="topic_namespace" default="vicon" description="Topic namespace for Vicon messages"/>
+    <arg name="world_frame" default="map" description="World frame for the tf2 transformations"/>
+    <arg name="vicon_frame" default="vicon" description="Vicon frame for the tf2 transformations"/>
+    <arg name="map_xyz" default="[0.0, 0.0, 0.0]" description="XYZ translation for coordinate frame mapping"/>
+    <arg name="map_rpy" default="[0.0, 0.0, 0.0]" description="RPY rotation for coordinate frame mapping"/>
+    <arg name="map_rpy_in_degrees" default="false" description="Whether RPY values are in degrees (true) or radians (false)"/>
+
+    <node pkg="vicon_receiver" exec="vicon_client" output="screen">
+        <param name="hostname" value="$(var hostname)"/>
+        <param name="buffer_size" value="$(var buffer_size)"/>
+        <param name="namespace" value="$(var topic_namespace)"/>
+        <param name="world_frame" value="$(var world_frame)"/>
+        <param name="vicon_frame" value="$(var vicon_frame)"/>
+        <param name="map_xyz" value="$(var map_xyz)"/>
+        <param name="map_rpy" value="$(var map_rpy)"/>
+        <param name="map_rpy_in_degrees" value="$(var map_rpy_in_degrees)"/>
+    </node>
+</launch>
