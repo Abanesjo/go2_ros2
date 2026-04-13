@@ -1,0 +1,8 @@
+string command
+---
+bool success
+string message
+bool is_active
+string robot_form
+string motion_name
+string service_name
