@@ -2,14 +2,14 @@
     <Domain>
         <General>
             <Interfaces>
-                <NetworkInterface name="lo" priority="default" multicast="false" />
-                <NetworkInterface name="wlo1" priority="default" multicast="default" />
-                <!-- <NetworkInterface name="enp130s0" priority="default" multicast="default" /> -->
+                <!-- <NetworkInterface name="lo" priority="default" multicast="false" />
+                <NetworkInterface name="wlo1" priority="default" multicast="default" /> -->
+                <NetworkInterface name="enp130s0" priority="default" multicast="default" />
             </Interfaces>
         </General>
-        <Discovery>
+        <!-- <Discovery>
             <ParticipantIndex>auto</ParticipantIndex>
             <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
-        </Discovery>
+        </Discovery> -->
     </Domain>
 </CycloneDDS>

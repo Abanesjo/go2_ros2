@@ -15,6 +15,9 @@ RUN apt install -y \
     libfmt-dev\ 
     tmux
 
+# Pin numpy/scipy/opencv before installing unitree_sdk2_python (which pulls numpy2 + opencv4 otherwise)
+RUN pip3 install numpy==1.26.4 scipy==1.13.1 opencv-contrib-python==4.7.0.72
+
 COPY dependencies /workspace/dependencies
 
 # Build & install CycloneDDS
@@ -24,9 +27,6 @@ RUN cd /workspace/dependencies/cyclonedds && mkdir build && cd build && \
 # Build & install unitree_sdk2
 RUN cd /workspace/dependencies/unitree_sdk2 && mkdir build && cd build && \
     cmake .. && make -j$(($(nproc) / 2)) && make install && ldconfig
-
-# Pin numpy/scipy/opencv before installing unitree_sdk2_python (which pulls numpy2 + opencv4 otherwise)
-RUN pip3 install numpy==1.26.4 scipy==1.13.1 opencv-contrib-python==4.7.0.72
 
 # Install ONNX Runtime C++ (for rl_controller_node) — v1.19.2 supports IR version 10
 RUN apt install -y wget && \
