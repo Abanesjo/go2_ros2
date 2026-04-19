@@ -1,7 +1,14 @@
 <launch>
-  <arg name="config_file"
+  <arg name="velocity_config"
        default="$(find-pkg-share go2_velocity)/config/go2_velocity.yaml"/>
+  <arg name="bridge_config"
+       default="$(find-pkg-share go2_bridge)/config/gains.yaml"/>
+  <arg name="bridge" default="true"/>
+
+  <node if="$(var bridge)" pkg="go2_bridge" exec="go2_bridge_node" name="go2_bridge_node" output="screen">
+    <param from="$(var bridge_config)"/>
+  </node>
   <node pkg="go2_velocity" exec="go2_velocity_node" name="go2_velocity_node" output="screen">
-    <param from="$(var config_file)"/>
+    <param from="$(var velocity_config)"/>
   </node>
 </launch>

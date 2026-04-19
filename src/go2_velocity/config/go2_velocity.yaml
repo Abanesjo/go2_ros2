@@ -3,25 +3,9 @@ go2_velocity_node:
     # Path to the exported ONNX policy (inside the container).
     policy_path: "/workspace/ros2_ws/src/go2_velocity/model/policy.onnx"
 
-    # false = simulator (skip CRC), true = real hardware (compute CRC).
-    real_robot: true
-
     # Seconds to interpolate from the initial pose to the default standing pose
     # before handing control over to the policy.
-    standup_duration: 10.0
-
-    # Policy-mode PD gains (per-axis: hip, thigh, calf). These come from the
-    # trained policy's actuator config embedded in the exported ONNX metadata.
-    kp_policy_hip: 20.0
-    kp_policy_thigh: 20.0
-    kp_policy_calf: 40.0
-    kd_policy_hip: 1.0
-    kd_policy_thigh: 1.0
-    kd_policy_calf: 2.0
-
-    # Standup-mode PD gains (uniform, high stiffness for reliable interpolation).
-    kp_standup: 60.0
-    kd_standup: 5.0
+    standup_duration: 2.0
 
     # Raw-action multiplier before adding the default joint offset.
     action_scale: 0.25

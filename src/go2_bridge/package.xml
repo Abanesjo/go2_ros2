@@ -1,18 +1,18 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>go2_velocity</name>
+  <name>go2_bridge</name>
   <version>0.0.1</version>
-  <description>Velocity policy deployment for Unitree Go2 (Isaac Lab / unitree_rl_mjlab ONNX)</description>
+  <description>Hardware bridge for Unitree Go2: translates between standard ROS2 messages and Unitree-specific LowState/LowCmd</description>
   <maintainer email="john.abanes@nyu.edu">john</maintainer>
   <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
-  <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>unitree_go</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

@@ -2,8 +2,8 @@
 // Verbatim from unitree_ros2_examples/include/common/motor_crc.h.
 // Copyright (c) 2020, Unitree Robotics. All rights reserved.
 
-#ifndef GO2_VELOCITY_MOTOR_CRC_HPP_
-#define GO2_VELOCITY_MOTOR_CRC_HPP_
+#ifndef GO2_BRIDGE_MOTOR_CRC_HPP_
+#define GO2_BRIDGE_MOTOR_CRC_HPP_
 
 #include <stdint.h>
 
@@ -54,4 +54,4 @@ typedef struct {
 uint32_t crc32_core(uint32_t* ptr, uint32_t len);
 void get_crc(unitree_go::msg::LowCmd& msg);
 
-#endif  // GO2_VELOCITY_MOTOR_CRC_HPP_
+#endif  // GO2_BRIDGE_MOTOR_CRC_HPP_
