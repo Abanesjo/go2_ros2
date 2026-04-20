@@ -1,6 +1,8 @@
-FROM osrf/ros:humble-desktop-full
+FROM ros:humble
 
 RUN apt update && apt upgrade -y
+
+RUN apt install ros-humble-desktop -y
 
 # ROS2 and build deps
 RUN apt install -y \
@@ -30,12 +32,16 @@ RUN cd /workspace/dependencies/unitree_sdk2 && mkdir build && cd build && \
 
 # Install ONNX Runtime C++ (for rl_controller_node) — v1.19.2 supports IR version 10
 RUN apt install -y wget && \
-    wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/onnxruntime-linux-x64-1.19.2.tgz && \
-    tar xf onnxruntime-linux-x64-1.19.2.tgz && \
-    cp -r onnxruntime-linux-x64-1.19.2/include/* /usr/local/include/ && \
-    cp -r onnxruntime-linux-x64-1.19.2/lib/* /usr/local/lib/ && \
+    ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then ORT_ARCH="aarch64"; else ORT_ARCH="x64"; fi && \
+    ORT_TGZ="onnxruntime-linux-${ORT_ARCH}-1.19.2.tgz" && \
+    wget -q "https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/${ORT_TGZ}" && \
+    tar xf "${ORT_TGZ}" && \
+    ORT_DIR=$(tar tf "${ORT_TGZ}" | head -1 | cut -d'/' -f1) && \
+    cp -r "${ORT_DIR}/include/"* /usr/local/include/ && \
+    cp -r "${ORT_DIR}/lib/"* /usr/local/lib/ && \
     ldconfig && \
-    rm -rf onnxruntime-linux-x64-1.19.2*
+    rm -rf "${ORT_DIR}" "${ORT_TGZ}"
 
 # Install unitree_sdk2_python
 RUN CYCLONEDDS_HOME=/usr/local pip3 install --no-deps /workspace/dependencies/unitree_sdk2_python
