@@ -1,35 +1,31 @@
 // Go2 velocity policy deployment node.
 //
-// Subscribes: /imu (sensor_msgs/Imu), /joint_states (sensor_msgs/JointState),
-//             /cmd_vel (geometry_msgs/Twist)
-// Publishes:  /joint_commands (sensor_msgs/JointState) at 500 Hz,
-//             /policy_active  (std_msgs/Bool)
+// Subscribes: /lowstate (unitree_go::msg::LowState), /cmd_vel (geometry_msgs::msg::Twist)
+// Publishes:  /lowcmd   (unitree_go::msg::LowCmd) at 500 Hz
 //
 // Runs an ONNX policy trained by unitree_rl_mjlab on the Unitree-Go2-Flat task.
 // The policy runs at 50 Hz; the publisher runs at 500 Hz with zero-order hold
-// between inferences (required for mujoco-side PD stability).
-//
-// Joint data on /joint_states and /joint_commands always includes joint names.
-// Consumers use name-based lookups — ordering on the wire does not matter.
+// between inferences.
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "onnxruntime_cxx_api.h"
 
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
-#include "sensor_msgs/msg/imu.hpp"
-#include "sensor_msgs/msg/joint_state.hpp"
-#include "std_msgs/msg/bool.hpp"
+#include "unitree_go/msg/low_state.hpp"
+#include "unitree_go/msg/low_cmd.hpp"
+
+#include "motor_crc.hpp"
 
 namespace {
 
@@ -37,29 +33,27 @@ namespace {
 // Constants
 // -----------------------------------------------------------------------------
 constexpr int kNumLegMotor = 12;
+constexpr int kNumMotor = 20;            // LowCmd has 20 motor slots
 constexpr int kObsDim = 47;              // 3 + 3 + 3 + 2 + 12 + 12 + 12
 constexpr int kActionDim = 12;
 constexpr double kPhasePeriod = 0.6;     // seconds, matches training
 constexpr double kCmdStandThreshold = 0.1;
 
-// Joint names in the order the policy expects (matching the ONNX training config).
-const std::vector<std::string> kJointNames = {
-    "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
-    "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
-    "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
-    "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint"
+// Joint remap:   isaac[i] = sdk[kJointMap[i]]
+//                sdk[kJointMap[i]] = isaac[i]
+// Isaac Lab order: FL, FR, RL, RR  (policy side)
+// Unitree SDK order: FR, FL, RR, RL  (motor_state indices)
+// Self-inverse permutation (swaps left<->right on each axle).
+constexpr std::array<int, kNumLegMotor> kJointMap = {
+    3, 4, 5,   // FL_hip, FL_thigh, FL_calf   -> sdk 3,4,5
+    0, 1, 2,   // FR_hip, FR_thigh, FR_calf   -> sdk 0,1,2
+    9, 10, 11, // RL_hip, RL_thigh, RL_calf   -> sdk 9,10,11
+    6, 7, 8    // RR_hip, RR_thigh, RR_calf   -> sdk 6,7,8
 };
 
-// Joint name -> internal index (for receiving /joint_states in any order).
-const std::unordered_map<std::string, int> kNameToIndex = {
-    {"FL_hip_joint", 0}, {"FL_thigh_joint", 1}, {"FL_calf_joint", 2},
-    {"FR_hip_joint", 3}, {"FR_thigh_joint", 4}, {"FR_calf_joint", 5},
-    {"RL_hip_joint", 6}, {"RL_thigh_joint", 7}, {"RL_calf_joint", 8},
-    {"RR_hip_joint", 9}, {"RR_thigh_joint", 10}, {"RR_calf_joint", 11},
-};
-
-// Default joint positions (matching kJointNames order and the ONNX training config).
-constexpr std::array<float, kNumLegMotor> kDefaultQ = {
+// Default joint positions in Isaac Lab order (from go2_constants.py and from
+// the default_joint_pos metadata embedded in the exported ONNX).
+constexpr std::array<float, kNumLegMotor> kDefaultQIsaac = {
     -0.1f, 0.9f, -1.8f,   // FL
      0.1f, 0.9f, -1.8f,   // FR
     -0.1f, 0.9f, -1.8f,   // RL
@@ -113,8 +107,6 @@ class OnnxPolicy {
   const std::vector<int64_t>& output_shape() const { return output_shape_; }
   size_t input_count() const { return input_names_.size(); }
 
-  // Runs inference; `obs` must be sized exactly input_sizes_[0] = kObsDim.
-  // Returns a newly-allocated vector with the output (size = kActionDim).
   std::vector<float> infer(std::vector<float>& obs) {
     auto mem = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
     std::vector<Ort::Value> inputs;
@@ -150,19 +142,55 @@ class OnnxPolicy {
 class Go2VelocityNode : public rclcpp::Node {
  public:
   Go2VelocityNode() : Node("go2_velocity_node") {
-    // Parameters.
+    // Parameters
     declare_parameter<std::string>("policy_path", "");
-    declare_parameter<double>("standup_duration", 2.0);
+    declare_parameter<bool>("real_robot", false);
+    declare_parameter<double>("standup_duration", 3.0);
     declare_parameter<double>("action_scale", 0.25);
+    declare_parameter<double>("standup_kp", 60.0);
+    declare_parameter<double>("standup_kd", 5.0);
+    declare_parameter<double>("kp_hip", 20.0);
+    declare_parameter<double>("kp_thigh", 20.0);
+    declare_parameter<double>("kp_calf", 40.0);
+    declare_parameter<double>("kd_hip", 1.0);
+    declare_parameter<double>("kd_thigh", 1.0);
+    declare_parameter<double>("kd_calf", 2.0);
 
     const std::string policy_path = get_parameter("policy_path").as_string();
+    real_robot_ = get_parameter("real_robot").as_bool();
     standup_duration_ = get_parameter("standup_duration").as_double();
     action_scale_ = static_cast<float>(get_parameter("action_scale").as_double());
+    standup_kp_ = static_cast<float>(get_parameter("standup_kp").as_double());
+    standup_kd_ = static_cast<float>(get_parameter("standup_kd").as_double());
 
-    target_q_ = kDefaultQ;
+    // Per-joint policy gains in SDK order. SDK and Isaac share the same
+    // (hip, thigh, calf) pattern per leg — only the leg order differs — so the
+    // same per-index pattern applies to both orderings.
+    {
+      float kp_hip = get_parameter("kp_hip").as_double();
+      float kp_thigh = get_parameter("kp_thigh").as_double();
+      float kp_calf = get_parameter("kp_calf").as_double();
+      float kd_hip = get_parameter("kd_hip").as_double();
+      float kd_thigh = get_parameter("kd_thigh").as_double();
+      float kd_calf = get_parameter("kd_calf").as_double();
+      for (int leg = 0; leg < 4; ++leg) {
+        policy_kp_sdk_[leg * 3 + 0] = kp_hip;
+        policy_kp_sdk_[leg * 3 + 1] = kp_thigh;
+        policy_kp_sdk_[leg * 3 + 2] = kp_calf;
+        policy_kd_sdk_[leg * 3 + 0] = kd_hip;
+        policy_kd_sdk_[leg * 3 + 1] = kd_thigh;
+        policy_kd_sdk_[leg * 3 + 2] = kd_calf;
+      }
+    }
+
+    // Default joint positions in SDK order.
+    for (int i = 0; i < kNumLegMotor; ++i) {
+      q_default_sdk_[kJointMap[i]] = kDefaultQIsaac[i];
+    }
+    target_q_sdk_ = q_default_sdk_;
     last_action_.fill(0.0f);
 
-    // Load policy.
+    // Load policy
     RCLCPP_INFO(get_logger(), "Loading ONNX policy: %s", policy_path.c_str());
     policy_ = std::make_unique<OnnxPolicy>(policy_path);
     const auto& in_shape = policy_->input_shape(0);
@@ -181,37 +209,28 @@ class Go2VelocityNode : public rclcpp::Node {
     }
     obs_buffer_.assign(kObsDim, 0.0f);
 
-    // QoS: best-effort, depth 1.
     auto qos = rclcpp::SensorDataQoS().keep_last(1);
 
-    // Subscribers.
-    imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
-        "/imu", qos,
-        [this](sensor_msgs::msg::Imu::SharedPtr msg) { ImuCb(*msg); });
-    joint_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
-        "/joint_states", qos,
-        [this](sensor_msgs::msg::JointState::SharedPtr msg) { JointStateCb(*msg); });
+    lowstate_sub_ = create_subscription<unitree_go::msg::LowState>(
+        "/lowstate", qos,
+        [this](unitree_go::msg::LowState::SharedPtr msg) { LowStateCb(*msg); });
     cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
         "/cmd_vel", qos,
         [this](geometry_msgs::msg::Twist::SharedPtr msg) { CmdVelCb(*msg); });
 
-    // Publishers.
-    joint_cmd_pub_ = create_publisher<sensor_msgs::msg::JointState>("/joint_commands", qos);
-    policy_active_pub_ = create_publisher<std_msgs::msg::Bool>("/policy_active", qos);
+    lowcmd_pub_ = create_publisher<unitree_go::msg::LowCmd>("/lowcmd", qos);
 
-    // 500 Hz publish timer (2 ms period).
     publish_timer_ = create_wall_timer(
         std::chrono::microseconds(2000),
         [this]() { PublishTimerCb(); });
-    // 50 Hz policy timer (20 ms period).
     policy_timer_ = create_wall_timer(
         std::chrono::microseconds(20000),
         [this]() { PolicyTimerCb(); });
 
     RCLCPP_INFO(get_logger(),
-                "go2_velocity_node started (standup=%.2fs)",
-                standup_duration_);
-    RCLCPP_INFO(get_logger(), "Waiting for /joint_states...");
+                "go2_velocity_node started (real_robot=%s, standup=%.2fs)",
+                real_robot_ ? "true" : "false", standup_duration_);
+    RCLCPP_INFO(get_logger(), "Waiting for /lowstate...");
   }
 
  private:
@@ -219,32 +238,26 @@ class Go2VelocityNode : public rclcpp::Node {
 
   // --- Callbacks ---
 
-  void ImuCb(const sensor_msgs::msg::Imu& msg) {
+  void LowStateCb(const unitree_go::msg::LowState& msg) {
     std::lock_guard<std::mutex> lock(state_mu_);
-    // sensor_msgs quaternion: x,y,z,w -> internal: w,x,y,z
-    latest_quat_[0] = msg.orientation.w;
-    latest_quat_[1] = msg.orientation.x;
-    latest_quat_[2] = msg.orientation.y;
-    latest_quat_[3] = msg.orientation.z;
-    latest_gyro_[0] = msg.angular_velocity.x;
-    latest_gyro_[1] = msg.angular_velocity.y;
-    latest_gyro_[2] = msg.angular_velocity.z;
-  }
-
-  void JointStateCb(const sensor_msgs::msg::JointState& msg) {
-    std::lock_guard<std::mutex> lock(state_mu_);
-    for (size_t j = 0; j < msg.name.size() && j < msg.position.size(); ++j) {
-      auto it = kNameToIndex.find(msg.name[j]);
-      if (it == kNameToIndex.end()) continue;
-      int idx = it->second;
-      latest_q_[idx] = msg.position[j];
-      if (j < msg.velocity.size()) latest_dq_[idx] = msg.velocity[j];
+    for (int i = 0; i < kNumLegMotor; ++i) {
+      latest_q_sdk_[i] = msg.motor_state[i].q;
+      latest_dq_sdk_[i] = msg.motor_state[i].dq;
     }
+    // Unitree stores quaternion as (w, x, y, z).
+    latest_quat_[0] = msg.imu_state.quaternion[0];
+    latest_quat_[1] = msg.imu_state.quaternion[1];
+    latest_quat_[2] = msg.imu_state.quaternion[2];
+    latest_quat_[3] = msg.imu_state.quaternion[3];
+    latest_gyro_[0] = msg.imu_state.gyroscope[0];
+    latest_gyro_[1] = msg.imu_state.gyroscope[1];
+    latest_gyro_[2] = msg.imu_state.gyroscope[2];
+
     if (state_ == State::kWaitingForState) {
-      q_init_ = latest_q_;
+      q_init_sdk_ = latest_q_sdk_;
       standup_start_time_ = std::chrono::steady_clock::now();
       state_ = State::kStandup;
-      RCLCPP_INFO(get_logger(), "Received first /joint_states, starting standup.");
+      RCLCPP_INFO(get_logger(), "Received first /lowstate, starting standup.");
     }
   }
 
@@ -265,11 +278,21 @@ class Go2VelocityNode : public rclcpp::Node {
     }
     if (state_snapshot == State::kWaitingForState) return;
 
-    // Build JointState message with current targets and joint names.
-    sensor_msgs::msg::JointState cmd;
-    cmd.header.stamp = now();
-    cmd.name = kJointNames;
-    cmd.position.resize(kNumLegMotor);
+    unitree_go::msg::LowCmd cmd{};
+    cmd.head[0] = 0xFE;
+    cmd.head[1] = 0xEF;
+    cmd.level_flag = 0xFF;
+    cmd.gpio = 0;
+
+    // Safe-stop defaults for all 20 motor slots.
+    for (int i = 0; i < kNumMotor; ++i) {
+      cmd.motor_cmd[i].mode = 0x01;
+      cmd.motor_cmd[i].q = static_cast<float>(PosStopF);
+      cmd.motor_cmd[i].dq = static_cast<float>(VelStopF);
+      cmd.motor_cmd[i].tau = 0.0f;
+      cmd.motor_cmd[i].kp = 0.0f;
+      cmd.motor_cmd[i].kd = 0.0f;
+    }
 
     if (state_snapshot == State::kStandup) {
       double t = std::chrono::duration<double>(
@@ -277,32 +300,46 @@ class Go2VelocityNode : public rclcpp::Node {
                      .count();
       double alpha = std::clamp(t / standup_duration_, 0.0, 1.0);
       for (int i = 0; i < kNumLegMotor; ++i) {
-        cmd.position[i] =
-            (1.0f - alpha) * q_init_[i] + alpha * kDefaultQ[i];
+        float q_target =
+            (1.0f - alpha) * q_init_sdk_[i] + alpha * q_default_sdk_[i];
+        cmd.motor_cmd[i].mode = 0x01;
+        cmd.motor_cmd[i].q = q_target;
+        cmd.motor_cmd[i].dq = 0.0f;
+        cmd.motor_cmd[i].tau = 0.0f;
+        cmd.motor_cmd[i].kp = standup_kp_;
+        cmd.motor_cmd[i].kd = standup_kd_;
       }
       if (alpha >= 1.0) {
         std::lock_guard<std::mutex> lock(state_mu_);
         if (state_ == State::kStandup) {
           state_ = State::kPolicy;
           last_action_.fill(0.0f);
-          target_q_ = kDefaultQ;
+          target_q_sdk_ = q_default_sdk_;
           policy_start_time_ = std::chrono::steady_clock::now();
           RCLCPP_INFO(get_logger(), "Standup complete, entering POLICY mode.");
         }
       }
     } else {  // kPolicy
-      std::lock_guard<std::mutex> lock(target_mu_);
+      std::array<float, kNumLegMotor> target;
+      {
+        std::lock_guard<std::mutex> lock(target_mu_);
+        target = target_q_sdk_;
+      }
       for (int i = 0; i < kNumLegMotor; ++i) {
-        cmd.position[i] = target_q_[i];
+        cmd.motor_cmd[i].mode = 0x01;
+        cmd.motor_cmd[i].q = target[i];
+        cmd.motor_cmd[i].dq = 0.0f;
+        cmd.motor_cmd[i].tau = 0.0f;
+        cmd.motor_cmd[i].kp = policy_kp_sdk_[i];
+        cmd.motor_cmd[i].kd = policy_kd_sdk_[i];
       }
     }
 
-    joint_cmd_pub_->publish(cmd);
+    if (real_robot_) {
+      get_crc(cmd);
+    }
 
-    // Signal which gains the bridge should use.
-    std_msgs::msg::Bool active_msg;
-    active_msg.data = (state_snapshot == State::kPolicy);
-    policy_active_pub_->publish(active_msg);
+    lowcmd_pub_->publish(cmd);
   }
 
   void PolicyTimerCb() {
@@ -321,30 +358,29 @@ class Go2VelocityNode : public rclcpp::Node {
       return;
     }
 
-    // Cache raw action for the next observation.
     for (int i = 0; i < kActionDim; ++i) last_action_[i] = action[i];
 
-    // target[i] = raw[i] * scale + default[i]
-    std::array<float, kNumLegMotor> target;
+    std::array<float, kNumLegMotor> target_sdk;
     for (int i = 0; i < kNumLegMotor; ++i) {
-      target[i] = action[i] * action_scale_ + kDefaultQ[i];
+      float q_isaac = action[i] * action_scale_ + kDefaultQIsaac[i];
+      target_sdk[kJointMap[i]] = q_isaac;
     }
     {
       std::lock_guard<std::mutex> lock(target_mu_);
-      target_q_ = target;
+      target_q_sdk_ = target_sdk;
     }
   }
 
   // --- Observation builder ---
 
   void BuildObservation(std::vector<float>& obs) {
-    std::array<float, kNumLegMotor> q, dq;
+    std::array<float, kNumLegMotor> q_sdk, dq_sdk;
     std::array<float, 4> quat;
     std::array<float, 3> gyro;
     {
       std::lock_guard<std::mutex> lock(state_mu_);
-      q = latest_q_;
-      dq = latest_dq_;
+      q_sdk = latest_q_sdk_;
+      dq_sdk = latest_dq_sdk_;
       quat = latest_quat_;
       gyro = latest_gyro_;
     }
@@ -357,7 +393,7 @@ class Go2VelocityNode : public rclcpp::Node {
       cz = cmd_ang_z_;
     }
 
-    // 0..2: base_ang_vel (gyro, unscaled)
+    // 0..2: base_ang_vel
     obs[0] = gyro[0];
     obs[1] = gyro[1];
     obs[2] = gyro[2];
@@ -388,14 +424,15 @@ class Go2VelocityNode : public rclcpp::Node {
       obs[10] = static_cast<float>(std::cos(gp * 2.0 * M_PI));
     }
 
-    // 11..22: joint_pos_rel
-    // 23..34: joint_vel
+    // 11..22: joint_pos_rel (Isaac order)
+    // 23..34: joint_vel     (Isaac order)
     for (int i = 0; i < kNumLegMotor; ++i) {
-      obs[11 + i] = q[i] - kDefaultQ[i];
-      obs[23 + i] = dq[i];
+      int sdk_idx = kJointMap[i];
+      obs[11 + i] = q_sdk[sdk_idx] - kDefaultQIsaac[i];
+      obs[23 + i] = dq_sdk[sdk_idx];
     }
 
-    // 35..46: last_action (raw)
+    // 35..46: last_action (Isaac order)
     for (int i = 0; i < kActionDim; ++i) {
       obs[35 + i] = last_action_[i];
     }
@@ -405,24 +442,27 @@ class Go2VelocityNode : public rclcpp::Node {
   std::unique_ptr<OnnxPolicy> policy_;
   std::vector<float> obs_buffer_;
 
-  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+  rclcpp::Subscription<unitree_go::msg::LowState>::SharedPtr lowstate_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
-  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_cmd_pub_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr policy_active_pub_;
+  rclcpp::Publisher<unitree_go::msg::LowCmd>::SharedPtr lowcmd_pub_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
   rclcpp::TimerBase::SharedPtr policy_timer_;
 
+  bool real_robot_;
   double standup_duration_;
   float action_scale_;
+  float standup_kp_, standup_kd_;
+  std::array<float, kNumLegMotor> policy_kp_sdk_;
+  std::array<float, kNumLegMotor> policy_kd_sdk_;
 
-  std::array<float, kNumLegMotor> target_q_{};
-  std::array<float, kNumLegMotor> q_init_{};
+  std::array<float, kNumLegMotor> q_default_sdk_;
+  std::array<float, kNumLegMotor> q_init_sdk_{};
+  std::array<float, kNumLegMotor> target_q_sdk_{};
   std::array<float, kActionDim> last_action_{};
 
-  // Latest sensor data (protected by state_mu_).
-  std::array<float, kNumLegMotor> latest_q_{};
-  std::array<float, kNumLegMotor> latest_dq_{};
+  // Latest LowState (protected by state_mu_).
+  std::array<float, kNumLegMotor> latest_q_sdk_{};
+  std::array<float, kNumLegMotor> latest_dq_sdk_{};
   std::array<float, 4> latest_quat_{1.0f, 0.0f, 0.0f, 0.0f};
   std::array<float, 3> latest_gyro_{};
 

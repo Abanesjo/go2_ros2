@@ -10,13 +10,13 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(std_msgs REQUIRED)
+find_package(unitree_go REQUIRED)
 
 add_executable(go2_velocity_node
-  src/go2_velocity_node.cpp)
+  src/go2_velocity_node.cpp
+  src/motor_crc.cpp)
 ament_target_dependencies(go2_velocity_node
-  rclcpp geometry_msgs sensor_msgs std_msgs)
+  rclcpp geometry_msgs unitree_go)
 target_link_libraries(go2_velocity_node onnxruntime)
 
 install(TARGETS go2_velocity_node DESTINATION lib/${PROJECT_NAME})

@@ -1,11 +1,18 @@
 go2_velocity_node:
   ros__parameters:
-    # Path to the exported ONNX policy (inside the container).
     policy_path: "/workspace/ros2_ws/src/go2_velocity/model/policy.onnx"
 
-    # Seconds to interpolate from the initial pose to the default standing pose
-    # before handing control over to the policy.
-    standup_duration: 2.0
-
-    # Raw-action multiplier before adding the default joint offset.
+    standup_duration: 3.0
     action_scale: 0.25
+
+    real_robot: false
+
+    standup_kp: 60.0
+    standup_kd: 5.0
+
+    kp_hip:   20.0
+    kp_thigh: 20.0
+    kp_calf:  40.0
+    kd_hip:   1.0
+    kd_thigh: 1.0
+    kd_calf:  2.0

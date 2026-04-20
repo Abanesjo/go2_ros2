@@ -10,14 +10,12 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(std_msgs REQUIRED)
 find_package(unitree_go REQUIRED)
 
 add_executable(go2_bridge_node
-  src/go2_bridge_node.cpp
-  src/motor_crc.cpp)
+  src/go2_bridge_node.cpp)
 ament_target_dependencies(go2_bridge_node
-  rclcpp sensor_msgs std_msgs unitree_go)
+  rclcpp sensor_msgs unitree_go)
 
 install(TARGETS go2_bridge_node DESTINATION lib/${PROJECT_NAME})
 

@@ -3,7 +3,7 @@
 <package format="3">
   <name>go2_bridge</name>
   <version>0.0.1</version>
-  <description>Hardware bridge for Unitree Go2: translates between standard ROS2 messages and Unitree-specific LowState/LowCmd</description>
+  <description>Sim-side bridge for Unitree Go2: translates /joint_states+/imu to /lowstate and /lowcmd to /joint_commands (torques) at 500 Hz</description>
   <maintainer email="john.abanes@nyu.edu">john</maintainer>
   <license>BSD-3-Clause</license>
 
@@ -11,7 +11,6 @@
 
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
-  <depend>std_msgs</depend>
   <depend>unitree_go</depend>
 
   <test_depend>ament_lint_auto</test_depend>

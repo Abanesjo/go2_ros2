@@ -1,8 +1,5 @@
 go2_bridge_node:
   ros__parameters:
-    # false = simulator (skip CRC), true = real hardware (compute CRC).
-    real_robot: true
-
     # Standup gains (uniform, high stiffness for reliable interpolation).
     standup_kp: 60.0
     standup_kd: 5.0
